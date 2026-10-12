@@ -60,8 +60,11 @@ class _DirectoryScreenState extends State<DirectoryScreen> {
 
   List<Map<String, dynamic>> _guests = [];
   int _count = 0;
+  int? _selectedId;
+
   bool _loading = true;
   bool _busy = false;
+
   String? _error;
   String? _message;
 
@@ -106,7 +109,7 @@ class _DirectoryScreenState extends State<DirectoryScreen> {
   }
 
   Future<void> _loadGuests() async {
-    if (_busy || (_loading && _guests.isNotEmpty)) return;
+    if (_busy) return;
 
     setState(() {
       _loading = true;
@@ -122,58 +125,110 @@ class _DirectoryScreenState extends State<DirectoryScreen> {
     });
   }
 
-  Future<void> _addGuest() async {
+  void _editGuest(Map<String, dynamic> guest) {
+    if (_busy || _loading) return;
+
+    setState(() {
+      _selectedId = guest[DatabaseHelper.columnId] as int;
+      _nameController.text =
+          guest[DatabaseHelper.columnName] as String;
+      _ageController.text =
+          '${guest[DatabaseHelper.columnAge]}';
+      _message = null;
+    });
+
+    _formKey.currentState?.reset();
+  }
+
+  void _cancelEdit() {
+    if (_busy || _loading) return;
+
+    setState(() {
+      _selectedId = null;
+      _nameController.clear();
+      _ageController.clear();
+      _message = 'Edit canceled. No changes were saved.';
+    });
+
+    _formKey.currentState?.reset();
+  }
+
+  Future<void> _saveGuest() async {
     if (_busy || _loading) return;
     if (!_formKey.currentState!.validate()) return;
 
     final name = _nameController.text.trim();
-    final age = int.parse(_ageController.text.trim());
+    final age = int.tryParse(_ageController.text.trim());
+
+    if (age == null) return;
+
+    final selectedId = _selectedId;
 
     setState(() {
       _busy = true;
       _message = null;
     });
 
-    int? insertedId;
+    bool writeSucceeded = false;
+    String? resultMessage;
 
     try {
-      insertedId = await widget.helper.insert({
-        DatabaseHelper.columnName: name,
-        DatabaseHelper.columnAge: age,
-      });
+      if (selectedId == null) {
+        final insertedId = await widget.helper.insert({
+          DatabaseHelper.columnName: name,
+          DatabaseHelper.columnAge: age,
+        });
+
+        writeSucceeded = true;
+        resultMessage = 'Guest saved with ID $insertedId.';
+      } else {
+        final updated = await widget.helper.update({
+          DatabaseHelper.columnId: selectedId,
+          DatabaseHelper.columnName: name,
+          DatabaseHelper.columnAge: age,
+        });
+
+        if (updated == 1) {
+          writeSucceeded = true;
+          resultMessage =
+              'Guest ID $selectedId updated. Rows affected: $updated.';
+        } else if (updated == 0) {
+          resultMessage =
+              'Guest ID $selectedId was not found. Rows affected: 0.';
+        } else {
+          resultMessage =
+              'Unexpected update result: $updated rows affected.';
+        }
+      }
     } catch (error, stackTrace) {
-      debugPrint('Failed to add guest: $error\n$stackTrace');
-
-      if (!mounted) return;
-
-      setState(() {
-        _message = 'Could not save guest. Please try again.';
-      });
+      debugPrint('Failed to save guest: $error\n$stackTrace');
+      resultMessage = 'Could not save guest. Please try again.';
     }
 
     if (!mounted) return;
 
-    if (insertedId != null) {
+    if (writeSucceeded) {
       _nameController.clear();
       _ageController.clear();
       _formKey.currentState!.reset();
 
-      final refreshed = await _refreshGuests();
-
-      if (!mounted) return;
-
       setState(() {
-        _message = refreshed
-            ? 'Guest saved with ID $insertedId.'
-            : 'Guest $insertedId saved, but refresh failed. Tap Refresh.';
+        _selectedId = null;
       });
     }
 
-    if (mounted) {
-      setState(() {
-        _busy = false;
-      });
-    }
+    final refreshed = await _refreshGuests();
+
+    if (!mounted) return;
+
+    setState(() {
+      _message = refreshed
+          ? resultMessage
+          : writeSucceeded
+              ? '$resultMessage Refresh failed. Tap Refresh.'
+              : '$resultMessage Could not refresh the list.';
+      _busy = false;
+    });
   }
 
   @override
@@ -193,7 +248,7 @@ class _DirectoryScreenState extends State<DirectoryScreen> {
                 children: [
                   TextFormField(
                     controller: _nameController,
-                    enabled: !_busy,
+                    enabled: !_busy && !_loading,
                     decoration: const InputDecoration(
                       labelText: 'Guest Name',
                       border: OutlineInputBorder(),
@@ -208,7 +263,7 @@ class _DirectoryScreenState extends State<DirectoryScreen> {
                   const SizedBox(height: 12),
                   TextFormField(
                     controller: _ageController,
-                    enabled: !_busy,
+                    enabled: !_busy && !_loading,
                     keyboardType: TextInputType.number,
                     decoration: const InputDecoration(
                       labelText: 'Guest Age',
@@ -225,9 +280,26 @@ class _DirectoryScreenState extends State<DirectoryScreen> {
                     },
                   ),
                   const SizedBox(height: 12),
-                  ElevatedButton(
-                    onPressed: (_busy || _loading) ? null : _addGuest,
-                    child: const Text('Add Guest'),
+                  Row(
+                    children: [
+                      ElevatedButton(
+                        onPressed:
+                            (_busy || _loading) ? null : _saveGuest,
+                        child: Text(
+                          _selectedId == null
+                              ? 'Add Guest'
+                              : 'Save Changes',
+                        ),
+                      ),
+                      if (_selectedId != null) ...[
+                        const SizedBox(width: 12),
+                        OutlinedButton(
+                          onPressed:
+                              (_busy || _loading) ? null : _cancelEdit,
+                          child: const Text('Cancel Edit'),
+                        ),
+                      ],
+                    ],
                   ),
                 ],
               ),
@@ -265,6 +337,13 @@ class _DirectoryScreenState extends State<DirectoryScreen> {
                                   subtitle: Text(
                                     'ID: ${guest[DatabaseHelper.columnId]} | '
                                     'Age: ${guest[DatabaseHelper.columnAge]}',
+                                  ),
+                                  trailing: IconButton(
+                                    icon: const Icon(Icons.edit),
+                                    tooltip: 'Edit guest',
+                                    onPressed: (_busy || _loading)
+                                        ? null
+                                        : () => _editGuest(guest),
                                   ),
                                 );
                               },
