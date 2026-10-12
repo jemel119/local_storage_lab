@@ -1,132 +1,456 @@
 
-import 'package:path/path.dart';
-import 'package:sqflite/sqflite.dart';
-import 'package:path_provider/path_provider.dart';
+import 'package:flutter/material.dart';
+import 'database_helper.dart';
 
-class DatabaseHelper {
-  static const _databaseName = "MyDatabase.db";
-  static const _databaseVersion = 2;
+Future<void> main() async {
+  WidgetsFlutterBinding.ensureInitialized();
 
-  static const table = 'my_table';
-  static const columnId = '_id';
-  static const columnName = 'name';
-  static const columnAge = 'age';
+  final helper = DatabaseHelper();
 
-  static const foldersTable = 'folders';
-  static const cardsTable = 'cards';
+  try {
+    await helper.init();
+  } catch (error, stackTrace) {
+    debugPrint('Database initialization failed: $error\n$stackTrace');
 
-  late Database _db;
+    runApp(
+      const MaterialApp(
+        home: Scaffold(
+          body: Center(
+            child: Text(
+              'Could not open local storage. Restart the app and check the logs.',
+            ),
+          ),
+        ),
+      ),
+    );
+    return;
+  }
 
-  // this opens the database (and creates it if it doesn't exist)
-  Future<void> init() async {
-    final documentsDirectory = await getApplicationDocumentsDirectory();
-    final path = join(documentsDirectory.path, _databaseName);
+  runApp(DirectoryApp(helper: helper));
+}
 
-    _db = await openDatabase(
-      path,
-      version: _databaseVersion,
-      onConfigure: (db) async {
-        await db.execute('PRAGMA foreign_keys = ON');
-      },
-      onCreate: _onCreate,
-      onUpgrade: _onUpgrade,
+class DirectoryApp extends StatelessWidget {
+  final DatabaseHelper helper;
+
+  const DirectoryApp({super.key, required this.helper});
+
+  @override
+  Widget build(BuildContext context) {
+    return MaterialApp(
+      title: 'Fall Festival Roster',
+      debugShowCheckedModeBanner: false,
+      home: DirectoryScreen(helper: helper),
     );
   }
+}
 
-  // SQL code to create the database table
-  Future _onCreate(Database db, int version) async {
-    await db.execute('''
-CREATE TABLE $table (
-$columnId INTEGER PRIMARY KEY,
-$columnName TEXT NOT NULL,
-$columnAge INTEGER NOT NULL
-)
-''');
+class DirectoryScreen extends StatefulWidget {
+  final DatabaseHelper helper;
 
-    await _createFoldersAndCards(db);
+  const DirectoryScreen({super.key, required this.helper});
+
+  @override
+  State<DirectoryScreen> createState() => _DirectoryScreenState();
+}
+
+class _DirectoryScreenState extends State<DirectoryScreen> {
+  final _formKey = GlobalKey<FormState>();
+  final _nameController = TextEditingController();
+  final _ageController = TextEditingController();
+
+  List<Map<String, dynamic>> _guests = [];
+  int _count = 0;
+  int? _selectedId;
+
+  bool _loading = true;
+  bool _busy = false;
+
+  String? _error;
+  String? _message;
+
+  @override
+  void initState() {
+    super.initState();
+    _loadGuests();
   }
 
-  Future<void> _onUpgrade(
-    Database db,
-    int oldVersion,
-    int newVersion,
-  ) async {
-    if (oldVersion < 2) {
-      await _createFoldersAndCards(db);
+  @override
+  void dispose() {
+    _nameController.dispose();
+    _ageController.dispose();
+    super.dispose();
+  }
+
+  Future<bool> _refreshGuests() async {
+    try {
+      final guests = await widget.helper.queryAllRows();
+      final count = await widget.helper.queryRowCount();
+
+      if (!mounted) return false;
+
+      setState(() {
+        _guests = guests;
+        _count = count;
+        _error = null;
+      });
+
+      return true;
+    } catch (error, stackTrace) {
+      debugPrint('Failed to load guests: $error\n$stackTrace');
+
+      if (!mounted) return false;
+
+      setState(() {
+        _error = 'Could not load guests. Please try again.';
+      });
+
+      return false;
     }
   }
 
-  Future<void> _createFoldersAndCards(Database db) async {
-    await db.execute('''
-CREATE TABLE $foldersTable (
-id INTEGER PRIMARY KEY AUTOINCREMENT,
-name TEXT NOT NULL UNIQUE,
-created_at TEXT NOT NULL
-)
-''');
+  Future<void> _loadGuests() async {
+    if (_busy) return;
 
-    await db.execute('''
-CREATE TABLE $cardsTable (
-id INTEGER PRIMARY KEY AUTOINCREMENT,
-title TEXT NOT NULL,
-suit TEXT NOT NULL,
-notes TEXT NOT NULL DEFAULT '',
-image_ref TEXT,
-folder_id INTEGER NOT NULL,
-FOREIGN KEY (folder_id)
-REFERENCES $foldersTable(id)
-ON DELETE CASCADE
-)
-''');
+    setState(() {
+      _loading = true;
+      _message = null;
+    });
 
-    await db.execute('''
-CREATE INDEX idx_cards_folder_id
-ON $cardsTable(folder_id)
-''');
+    await _refreshGuests();
+
+    if (!mounted) return;
+
+    setState(() {
+      _loading = false;
+    });
   }
 
-  // Helper methods
-  // Inserts a row in the database where each key in the
-  //Map is a column name
-  // and the value is the column value. The return value
-  //is the id of the
-  // inserted row.
-  Future<int> insert(Map<String, dynamic> row) async {
-    return await _db.insert(table, row);
+  void _editGuest(Map<String, dynamic> guest) {
+    if (_busy || _loading) return;
+
+    setState(() {
+      _selectedId = guest[DatabaseHelper.columnId] as int;
+      _nameController.text =
+          guest[DatabaseHelper.columnName] as String;
+      _ageController.text =
+          '${guest[DatabaseHelper.columnAge]}';
+      _message = null;
+    });
+
+    _formKey.currentState?.reset();
   }
 
-  // All of the rows are returned as a list of maps, where each map is
-  // a key-value list of columns.
-  Future<List<Map<String, dynamic>>> queryAllRows() async {
-    return await _db.query(table);
+  void _cancelEdit() {
+    if (_busy || _loading) return;
+
+    setState(() {
+      _selectedId = null;
+      _nameController.clear();
+      _ageController.clear();
+      _message = 'Edit canceled. No changes were saved.';
+    });
+
+    _formKey.currentState?.reset();
   }
 
-  // All of the methods (insert, query, update, delete) can also be done using
-  // raw SQL commands. This method uses a raw query to give the row count.
-  Future<int> queryRowCount() async {
-    final results = await _db.rawQuery('SELECT COUNT(*) FROM $table');
-    return Sqflite.firstIntValue(results) ?? 0;
+  Future<void> _saveGuest() async {
+    if (_busy || _loading) return;
+    if (!_formKey.currentState!.validate()) return;
+
+    final name = _nameController.text.trim();
+    final age = int.tryParse(_ageController.text.trim());
+
+    if (age == null) return;
+
+    final selectedId = _selectedId;
+
+    setState(() {
+      _busy = true;
+      _message = null;
+    });
+
+    bool writeSucceeded = false;
+    String? resultMessage;
+
+    try {
+      if (selectedId == null) {
+        final insertedId = await widget.helper.insert({
+          DatabaseHelper.columnName: name,
+          DatabaseHelper.columnAge: age,
+        });
+
+        writeSucceeded = true;
+        resultMessage = 'Guest saved with ID $insertedId.';
+      } else {
+        final updated = await widget.helper.update({
+          DatabaseHelper.columnId: selectedId,
+          DatabaseHelper.columnName: name,
+          DatabaseHelper.columnAge: age,
+        });
+
+        if (updated == 1) {
+          writeSucceeded = true;
+          resultMessage =
+              'Guest ID $selectedId updated. Rows affected: $updated.';
+        } else if (updated == 0) {
+          resultMessage =
+              'Guest ID $selectedId was not found. Rows affected: 0.';
+        } else {
+          resultMessage =
+              'Unexpected update result: $updated rows affected.';
+        }
+      }
+    } catch (error, stackTrace) {
+      debugPrint('Failed to save guest: $error\n$stackTrace');
+      resultMessage = 'Could not save guest. Please try again.';
+    }
+
+    if (!mounted) return;
+
+    if (writeSucceeded) {
+      _nameController.clear();
+      _ageController.clear();
+      _formKey.currentState!.reset();
+
+      setState(() {
+        _selectedId = null;
+      });
+    }
+
+    final refreshed = await _refreshGuests();
+
+    if (!mounted) return;
+
+    setState(() {
+      _message = refreshed
+          ? resultMessage
+          : writeSucceeded
+              ? '$resultMessage Refresh failed. Tap Refresh.'
+              : '$resultMessage Could not refresh the list.';
+      _busy = false;
+    });
   }
 
-  // We are assuming here that the id column in the map is set. The other
-  // column values will be used to update the row.
-  Future<int> update(Map<String, dynamic> row) async {
-    int id = row[columnId];
-    return await _db.update(
-      table,
-      row,
-      where: '$columnId = ?',
-      whereArgs: [id],
+  Future<void> _deleteGuest(Map<String, dynamic> guest) async {
+    if (_busy || _loading) return;
+
+    final id = guest[DatabaseHelper.columnId] as int;
+    final name = guest[DatabaseHelper.columnName] as String;
+
+    final confirmed = await showDialog<bool>(
+      context: context,
+      builder: (dialogContext) {
+        return AlertDialog(
+          title: const Text('Delete Guest'),
+          content: Text(
+            'Are you sure you want to delete $name (ID: $id)?',
+          ),
+          actions: [
+            TextButton(
+              onPressed: () {
+                Navigator.pop(dialogContext, false);
+              },
+              child: const Text('Cancel'),
+            ),
+            TextButton(
+              onPressed: () {
+                Navigator.pop(dialogContext, true);
+              },
+              child: const Text('Delete'),
+            ),
+          ],
+        );
+      },
     );
+
+    if (!mounted || confirmed != true || _busy || _loading) return;
+
+    setState(() {
+      _busy = true;
+      _message = null;
+    });
+
+    bool deleteSucceeded = false;
+    String? resultMessage;
+
+    try {
+      final deleted = await widget.helper.delete(id);
+
+      if (deleted == 1) {
+        deleteSucceeded = true;
+        resultMessage =
+            'Guest ID $id deleted. Rows affected: $deleted.';
+      } else if (deleted == 0) {
+        resultMessage =
+            'Guest ID $id was not found. Rows affected: 0.';
+      } else {
+        resultMessage =
+            'Unexpected delete result: $deleted rows affected.';
+      }
+    } catch (error, stackTrace) {
+      debugPrint('Failed to delete guest: $error\n$stackTrace');
+      resultMessage = 'Could not delete guest. Please try again.';
+    }
+
+    if (!mounted) return;
+
+    if (deleteSucceeded && _selectedId == id) {
+      _nameController.clear();
+      _ageController.clear();
+      _formKey.currentState!.reset();
+
+      setState(() {
+        _selectedId = null;
+      });
+    }
+
+    final refreshed = await _refreshGuests();
+
+    if (!mounted) return;
+
+    setState(() {
+      _message = refreshed
+          ? resultMessage
+          : deleteSucceeded
+              ? '$resultMessage Refresh failed. Tap Refresh.'
+              : '$resultMessage Could not refresh the list.';
+      _busy = false;
+    });
   }
 
-  // Deletes the row specified by the id. The number of affected rows is
-  // returned. This should be 1 as long as the row exists.
-  Future<int> delete(int id) async {
-    return await _db.delete(
-      table,
-      where: '$columnId = ?',
-      whereArgs: [id],
+  @override
+  Widget build(BuildContext context) {
+    return Scaffold(
+      appBar: AppBar(
+        title: const Text('Fall Festival Roster'),
+      ),
+      body: Padding(
+        padding: const EdgeInsets.all(16),
+        child: Column(
+          crossAxisAlignment: CrossAxisAlignment.start,
+          children: [
+            Form(
+              key: _formKey,
+              child: Column(
+                children: [
+                  TextFormField(
+                    controller: _nameController,
+                    enabled: !_busy && !_loading,
+                    decoration: const InputDecoration(
+                      labelText: 'Guest Name',
+                      border: OutlineInputBorder(),
+                    ),
+                    validator: (value) {
+                      if (value == null || value.trim().isEmpty) {
+                        return 'Please enter a guest name.';
+                      }
+                      return null;
+                    },
+                  ),
+                  const SizedBox(height: 12),
+                  TextFormField(
+                    controller: _ageController,
+                    enabled: !_busy && !_loading,
+                    keyboardType: TextInputType.number,
+                    decoration: const InputDecoration(
+                      labelText: 'Guest Age',
+                      border: OutlineInputBorder(),
+                    ),
+                    validator: (value) {
+                      final age = int.tryParse(value?.trim() ?? '');
+
+                      if (age == null || age < 0 || age > 130) {
+                        return 'Enter a whole-number age from 0 to 130.';
+                      }
+
+                      return null;
+                    },
+                  ),
+                  const SizedBox(height: 12),
+                  Row(
+                    children: [
+                      ElevatedButton(
+                        onPressed:
+                            (_busy || _loading) ? null : _saveGuest,
+                        child: Text(
+                          _selectedId == null
+                              ? 'Add Guest'
+                              : 'Save Changes',
+                        ),
+                      ),
+                      if (_selectedId != null) ...[
+                        const SizedBox(width: 12),
+                        OutlinedButton(
+                          onPressed:
+                              (_busy || _loading) ? null : _cancelEdit,
+                          child: const Text('Cancel Edit'),
+                        ),
+                      ],
+                    ],
+                  ),
+                ],
+              ),
+            ),
+            const SizedBox(height: 16),
+            Text('Guest Count: $_count'),
+            const SizedBox(height: 12),
+            ElevatedButton(
+              onPressed: (_busy || _loading) ? null : _loadGuests,
+              child: const Text('Refresh'),
+            ),
+            if (_message != null) ...[
+              const SizedBox(height: 12),
+              Text(_message!),
+            ],
+            const SizedBox(height: 16),
+            Expanded(
+              child: _loading
+                  ? const Center(child: CircularProgressIndicator())
+                  : _error != null
+                      ? Center(child: Text(_error!))
+                      : _guests.isEmpty
+                          ? const Center(
+                              child: Text('No festival guests yet'),
+                            )
+                          : ListView.builder(
+                              itemCount: _guests.length,
+                              itemBuilder: (context, index) {
+                                final guest = _guests[index];
+
+                                return ListTile(
+                                  title: Text(
+                                    '${guest[DatabaseHelper.columnName]}',
+                                  ),
+                                  subtitle: Text(
+                                    'ID: ${guest[DatabaseHelper.columnId]} | '
+                                    'Age: ${guest[DatabaseHelper.columnAge]}',
+                                  ),
+                                  trailing: Row(
+                                    mainAxisSize: MainAxisSize.min,
+                                    children: [
+                                      IconButton(
+                                        icon: const Icon(Icons.edit),
+                                        tooltip: 'Edit guest',
+                                        onPressed: (_busy || _loading)
+                                            ? null
+                                            : () => _editGuest(guest),
+                                      ),
+                                      IconButton(
+                                        icon: const Icon(Icons.delete),
+                                        tooltip: 'Delete guest',
+                                        onPressed: (_busy || _loading)
+                                            ? null
+                                            : () => _deleteGuest(guest),
+                                      ),
+                                    ],
+                                  ),
+                                );
+                              },
+                            ),
+            ),
+          ],
+        ),
+      ),
     );
   }
 }
