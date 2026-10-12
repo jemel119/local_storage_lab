@@ -1,6 +1,8 @@
 
 import 'package:flutter/material.dart';
 import 'database_helper.dart';
+import 'folder.dart';
+import 'folder_repository.dart';
 
 Future<void> main() async {
   WidgetsFlutterBinding.ensureInitialized();
@@ -109,7 +111,7 @@ class _DirectoryScreenState extends State<DirectoryScreen> {
   }
 
   Future<void> _loadGuests() async {
-    if (_busy) return;
+    if (_busy || _loading && _guests.isNotEmpty) return;
 
     setState(() {
       _loading = true;
@@ -130,10 +132,8 @@ class _DirectoryScreenState extends State<DirectoryScreen> {
 
     setState(() {
       _selectedId = guest[DatabaseHelper.columnId] as int;
-      _nameController.text =
-          guest[DatabaseHelper.columnName] as String;
-      _ageController.text =
-          '${guest[DatabaseHelper.columnAge]}';
+      _nameController.text = guest[DatabaseHelper.columnName] as String;
+      _ageController.text = '${guest[DatabaseHelper.columnAge]}';
       _message = null;
     });
 
@@ -323,6 +323,20 @@ class _DirectoryScreenState extends State<DirectoryScreen> {
     return Scaffold(
       appBar: AppBar(
         title: const Text('Fall Festival Roster'),
+        actions: [
+          IconButton(
+            icon: const Icon(Icons.folder),
+            tooltip: 'Manage Folders',
+            onPressed: () {
+              Navigator.push(
+                context,
+                MaterialPageRoute(
+                  builder: (context) => FolderScreen(helper: widget.helper),
+                ),
+              );
+            },
+          ),
+        ],
       ),
       body: Padding(
         padding: const EdgeInsets.all(16),
@@ -370,19 +384,15 @@ class _DirectoryScreenState extends State<DirectoryScreen> {
                   Row(
                     children: [
                       ElevatedButton(
-                        onPressed:
-                            (_busy || _loading) ? null : _saveGuest,
+                        onPressed: (_busy || _loading) ? null : _saveGuest,
                         child: Text(
-                          _selectedId == null
-                              ? 'Add Guest'
-                              : 'Save Changes',
+                          _selectedId == null ? 'Add Guest' : 'Save Changes',
                         ),
                       ),
                       if (_selectedId != null) ...[
                         const SizedBox(width: 12),
                         OutlinedButton(
-                          onPressed:
-                              (_busy || _loading) ? null : _cancelEdit,
+                          onPressed: (_busy || _loading) ? null : _cancelEdit,
                           child: const Text('Cancel Edit'),
                         ),
                       ],
@@ -450,6 +460,317 @@ class _DirectoryScreenState extends State<DirectoryScreen> {
             ),
           ],
         ),
+      ),
+    );
+  }
+}
+
+class FolderScreen extends StatefulWidget {
+  final DatabaseHelper helper;
+
+  const FolderScreen({super.key, required this.helper});
+
+  @override
+  State<FolderScreen> createState() => _FolderScreenState();
+}
+
+class _FolderScreenState extends State<FolderScreen> {
+  late final FolderRepository _repository;
+
+  List<Folder> _folders = [];
+  bool _loading = true;
+  bool _busy = false;
+  String? _error;
+  String? _message;
+
+  @override
+  void initState() {
+    super.initState();
+    _repository = FolderRepository(widget.helper);
+    _loadFolders();
+  }
+
+  Future<void> _loadFolders() async {
+    if (_busy) return;
+
+    setState(() {
+      _loading = true;
+      _error = null;
+    });
+
+    try {
+      final folders = await _repository.getAllFolders();
+
+      if (!mounted) return;
+
+      setState(() {
+        _folders = folders;
+      });
+    } catch (error, stackTrace) {
+      debugPrint('Failed to load folders: $error\n$stackTrace');
+
+      if (!mounted) return;
+
+      setState(() {
+        _error = 'Could not load folders.';
+      });
+    } finally {
+      if (mounted) {
+        setState(() {
+          _loading = false;
+        });
+      }
+    }
+  }
+
+  Future<void> _showFolderDialog({Folder? folder}) async {
+    if (_busy || _loading) return;
+
+    final controller = TextEditingController(text: folder?.name ?? '');
+    final formKey = GlobalKey<FormState>();
+
+    final name = await showDialog<String>(
+      context: context,
+      builder: (dialogContext) {
+        return AlertDialog(
+          title: Text(folder == null ? 'New Folder' : 'Rename Folder'),
+          content: Form(
+            key: formKey,
+            child: TextFormField(
+              controller: controller,
+              autofocus: true,
+              decoration: const InputDecoration(
+                labelText: 'Folder Name',
+              ),
+              validator: (value) {
+                if (value == null || value.trim().isEmpty) {
+                  return 'Folder name is required.';
+                }
+                return null;
+              },
+            ),
+          ),
+          actions: [
+            TextButton(
+              onPressed: () => Navigator.pop(dialogContext),
+              child: const Text('Cancel'),
+            ),
+            ElevatedButton(
+              onPressed: () {
+                if (formKey.currentState!.validate()) {
+                  Navigator.pop(dialogContext, controller.text.trim());
+                }
+              },
+              child: Text(folder == null ? 'Create' : 'Save'),
+            ),
+          ],
+        );
+      },
+    );
+
+    controller.dispose();
+
+    if (!mounted || name == null || _busy || _loading) return;
+
+    setState(() {
+      _busy = true;
+      _message = null;
+    });
+
+    bool saved = false;
+    String resultMessage;
+
+    try {
+      if (folder == null) {
+        final id = await _repository.insertFolder(
+          Folder(
+            name: name,
+            createdAt: DateTime.now().toIso8601String(),
+          ),
+        );
+        saved = true;
+        resultMessage = 'Folder created with ID $id.';
+      } else {
+        final affected = await _repository.updateFolder(
+          Folder(
+            id: folder.id,
+            name: name,
+            createdAt: folder.createdAt,
+          ),
+        );
+        saved = affected == 1;
+        resultMessage = 'Folder update affected $affected row(s).';
+      }
+    } catch (error, stackTrace) {
+      debugPrint('Failed to save folder: $error\n$stackTrace');
+      resultMessage = 'Could not save folder. Check for duplicate names.';
+    }
+
+    if (!mounted) return;
+
+    bool refreshed = false;
+
+    try {
+      final folders = await _repository.getAllFolders();
+      if (!mounted) return;
+      setState(() {
+        _folders = folders;
+        _error = null;
+      });
+      refreshed = true;
+    } catch (error, stackTrace) {
+      debugPrint('Failed to refresh folders: $error\n$stackTrace');
+    }
+
+    if (!mounted) return;
+
+    setState(() {
+      _busy = false;
+      _message = refreshed
+          ? resultMessage
+          : saved
+              ? '$resultMessage Refresh failed.'
+              : '$resultMessage Could not refresh folders.';
+    });
+  }
+
+  Future<void> _deleteFolder(Folder folder) async {
+    if (_busy || _loading) return;
+
+    final confirmed = await showDialog<bool>(
+      context: context,
+      builder: (dialogContext) => AlertDialog(
+        title: const Text('Delete Folder'),
+        content: Text(
+          'Delete "${folder.name}" and all cards inside it?',
+        ),
+        actions: [
+          TextButton(
+            onPressed: () => Navigator.pop(dialogContext, false),
+            child: const Text('Cancel'),
+          ),
+          TextButton(
+            onPressed: () => Navigator.pop(dialogContext, true),
+            child: const Text('Delete'),
+          ),
+        ],
+      ),
+    );
+
+    if (!mounted || confirmed != true || _busy || _loading) return;
+
+    setState(() {
+      _busy = true;
+      _message = null;
+    });
+
+    bool deleted = false;
+    String resultMessage;
+
+    try {
+      final affected = await _repository.deleteFolder(folder.id!);
+      deleted = affected == 1;
+      resultMessage = 'Folder deletion affected $affected row(s).';
+    } catch (error, stackTrace) {
+      debugPrint('Failed to delete folder: $error\n$stackTrace');
+      resultMessage = 'Could not delete folder.';
+    }
+
+    if (!mounted) return;
+
+    bool refreshed = false;
+
+    try {
+      final folders = await _repository.getAllFolders();
+      if (!mounted) return;
+      setState(() {
+        _folders = folders;
+        _error = null;
+      });
+      refreshed = true;
+    } catch (error, stackTrace) {
+      debugPrint('Failed to refresh folders: $error\n$stackTrace');
+    }
+
+    if (!mounted) return;
+
+    setState(() {
+      _busy = false;
+      _message = refreshed
+          ? resultMessage
+          : deleted
+              ? '$resultMessage Refresh failed.'
+              : '$resultMessage Could not refresh folders.';
+    });
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    return Scaffold(
+      appBar: AppBar(
+        title: const Text('Folders'),
+        actions: [
+          IconButton(
+            icon: const Icon(Icons.refresh),
+            tooltip: 'Refresh folders',
+            onPressed: (_busy || _loading) ? null : _loadFolders,
+          ),
+        ],
+      ),
+      floatingActionButton: FloatingActionButton(
+        onPressed: (_busy || _loading) ? null : () => _showFolderDialog(),
+        tooltip: 'Add folder',
+        child: const Icon(Icons.add),
+      ),
+      body: Column(
+        children: [
+          if (_message != null)
+            Padding(
+              padding: const EdgeInsets.all(16),
+              child: Text(_message!),
+            ),
+          Expanded(
+            child: _loading
+                ? const Center(child: CircularProgressIndicator())
+                : _error != null
+                    ? Center(child: Text(_error!))
+                    : _folders.isEmpty
+                        ? const Center(child: Text('No folders yet'))
+                        : ListView.builder(
+                            itemCount: _folders.length,
+                            itemBuilder: (context, index) {
+                              final folder = _folders[index];
+
+                              return ListTile(
+                                leading: const Icon(Icons.folder),
+                                title: Text(folder.name),
+                                subtitle: Text('ID: ${folder.id}'),
+                                trailing: Row(
+                                  mainAxisSize: MainAxisSize.min,
+                                  children: [
+                                    IconButton(
+                                      icon: const Icon(Icons.edit),
+                                      tooltip: 'Rename folder',
+                                      onPressed: (_busy || _loading)
+                                          ? null
+                                          : () => _showFolderDialog(
+                                                folder: folder,
+                                              ),
+                                    ),
+                                    IconButton(
+                                      icon: const Icon(Icons.delete),
+                                      tooltip: 'Delete folder',
+                                      onPressed: (_busy || _loading)
+                                          ? null
+                                          : () => _deleteFolder(folder),
+                                    ),
+                                  ],
+                                ),
+                              );
+                            },
+                          ),
+          ),
+        ],
       ),
     );
   }
