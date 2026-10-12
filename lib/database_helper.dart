@@ -16,6 +16,9 @@ class DatabaseHelper {
   static const cardsTable = 'cards';
 
   late Database _db;
+  Future<Database> get database async {
+  return _db;
+}
 
   // this opens the database (and creates it if it doesn't exist)
   Future<void> init() async {
