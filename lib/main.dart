@@ -231,6 +231,93 @@ class _DirectoryScreenState extends State<DirectoryScreen> {
     });
   }
 
+  Future<void> _deleteGuest(Map<String, dynamic> guest) async {
+    if (_busy || _loading) return;
+
+    final id = guest[DatabaseHelper.columnId] as int;
+    final name = guest[DatabaseHelper.columnName] as String;
+
+    final confirmed = await showDialog<bool>(
+      context: context,
+      builder: (dialogContext) {
+        return AlertDialog(
+          title: const Text('Delete Guest'),
+          content: Text(
+            'Are you sure you want to delete $name (ID: $id)?',
+          ),
+          actions: [
+            TextButton(
+              onPressed: () {
+                Navigator.pop(dialogContext, false);
+              },
+              child: const Text('Cancel'),
+            ),
+            TextButton(
+              onPressed: () {
+                Navigator.pop(dialogContext, true);
+              },
+              child: const Text('Delete'),
+            ),
+          ],
+        );
+      },
+    );
+
+    if (!mounted || confirmed != true || _busy || _loading) return;
+
+    setState(() {
+      _busy = true;
+      _message = null;
+    });
+
+    bool deleteSucceeded = false;
+    String? resultMessage;
+
+    try {
+      final deleted = await widget.helper.delete(id);
+
+      if (deleted == 1) {
+        deleteSucceeded = true;
+        resultMessage =
+            'Guest ID $id deleted. Rows affected: $deleted.';
+      } else if (deleted == 0) {
+        resultMessage =
+            'Guest ID $id was not found. Rows affected: 0.';
+      } else {
+        resultMessage =
+            'Unexpected delete result: $deleted rows affected.';
+      }
+    } catch (error, stackTrace) {
+      debugPrint('Failed to delete guest: $error\n$stackTrace');
+      resultMessage = 'Could not delete guest. Please try again.';
+    }
+
+    if (!mounted) return;
+
+    if (deleteSucceeded && _selectedId == id) {
+      _nameController.clear();
+      _ageController.clear();
+      _formKey.currentState!.reset();
+
+      setState(() {
+        _selectedId = null;
+      });
+    }
+
+    final refreshed = await _refreshGuests();
+
+    if (!mounted) return;
+
+    setState(() {
+      _message = refreshed
+          ? resultMessage
+          : deleteSucceeded
+              ? '$resultMessage Refresh failed. Tap Refresh.'
+              : '$resultMessage Could not refresh the list.';
+      _busy = false;
+    });
+  }
+
   @override
   Widget build(BuildContext context) {
     return Scaffold(
@@ -338,12 +425,24 @@ class _DirectoryScreenState extends State<DirectoryScreen> {
                                     'ID: ${guest[DatabaseHelper.columnId]} | '
                                     'Age: ${guest[DatabaseHelper.columnAge]}',
                                   ),
-                                  trailing: IconButton(
-                                    icon: const Icon(Icons.edit),
-                                    tooltip: 'Edit guest',
-                                    onPressed: (_busy || _loading)
-                                        ? null
-                                        : () => _editGuest(guest),
+                                  trailing: Row(
+                                    mainAxisSize: MainAxisSize.min,
+                                    children: [
+                                      IconButton(
+                                        icon: const Icon(Icons.edit),
+                                        tooltip: 'Edit guest',
+                                        onPressed: (_busy || _loading)
+                                            ? null
+                                            : () => _editGuest(guest),
+                                      ),
+                                      IconButton(
+                                        icon: const Icon(Icons.delete),
+                                        tooltip: 'Delete guest',
+                                        onPressed: (_busy || _loading)
+                                            ? null
+                                            : () => _deleteGuest(guest),
+                                      ),
+                                    ],
                                   ),
                                 );
                               },
