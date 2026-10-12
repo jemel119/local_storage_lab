@@ -3,6 +3,7 @@ import 'package:flutter/material.dart';
 import 'database_helper.dart';
 import 'folder.dart';
 import 'folder_repository.dart';
+import 'card_screen.dart';
 
 Future<void> main() async {
   WidgetsFlutterBinding.ensureInitialized();
@@ -745,6 +746,19 @@ class _FolderScreenState extends State<FolderScreen> {
                                 leading: const Icon(Icons.folder),
                                 title: Text(folder.name),
                                 subtitle: Text('ID: ${folder.id}'),
+                                onTap: (_busy || _loading)
+                                    ? null
+                                    : () {
+                                        Navigator.push(
+                                          context,
+                                          MaterialPageRoute(
+                                            builder: (context) => CardScreen(
+                                              helper: widget.helper,
+                                              folder: folder,
+                                            ),
+                                          ),
+                                        );
+                                      },
                                 trailing: Row(
                                   mainAxisSize: MainAxisSize.min,
                                   children: [
